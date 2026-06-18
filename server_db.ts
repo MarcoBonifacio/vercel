@@ -164,3 +164,94 @@ export async function createOrder(ord: Order): Promise<Order> {
   saveLocalData();
   return ord;
 }
+
+// --- CART PERSISTENCE (Supabase) ---
+
+export async function getCart(sessionId: string): Promise<CartItem[]> {
+  if (supabase) {
+    try {
+      const { data: cart } = await supabase
+        .from('shopping_carts')
+        .select('id')
+        .eq('session_id', sessionId)
+        .eq('status', 'active')
+        .maybeSingle();
+
+      if (!cart) return [];
+
+      const { data: items } = await supabase
+        .from('cart_items')
+        .select('product_id, quantity')
+        .eq('cart_id', cart.id);
+
+      if (!items || items.length === 0) return [];
+
+      const productIds = items.map(i => i.product_id);
+      const { data: products } = await supabase
+        .from('products')
+        .select('*')
+        .in('id', productIds);
+
+      if (!products) return [];
+
+      const productMap = new Map(products.map(p => [p.id, p]));
+
+      return items
+        .map(item => {
+          const product = productMap.get(item.product_id);
+          if (!product) return null;
+          return { product, quantity: item.quantity };
+        })
+        .filter(Boolean) as CartItem[];
+    } catch (err) {
+      console.error('Supabase error in getCart', err);
+    }
+  }
+  return [];
+}
+
+export async function saveCart(sessionId: string, items: CartItem[]): Promise<boolean> {
+  if (supabase) {
+    try {
+      let { data: existingCart } = await supabase
+        .from('shopping_carts')
+        .select('id')
+        .eq('session_id', sessionId)
+        .eq('status', 'active')
+        .maybeSingle();
+
+      let cartId: string;
+
+      if (existingCart) {
+        cartId = existingCart.id;
+      } else {
+        const { data: newCart } = await supabase
+          .from('shopping_carts')
+          .insert({ session_id: sessionId, status: 'active' })
+          .select('id')
+          .single();
+
+        if (!newCart) return false;
+        cartId = newCart.id;
+      }
+
+      await supabase.from('cart_items').delete().eq('cart_id', cartId);
+
+      if (items.length > 0) {
+        const cartItems = items.map(item => ({
+          cart_id: cartId,
+          product_id: item.product.id,
+          quantity: item.quantity
+        }));
+
+        const { error } = await supabase.from('cart_items').insert(cartItems);
+        if (error) throw error;
+      }
+
+      return true;
+    } catch (err) {
+      console.error('Supabase error in saveCart', err);
+    }
+  }
+  return false;
+}

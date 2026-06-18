@@ -17,6 +17,7 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>(INITIAL_PRODUCTS);
   const [orders, setOrders] = useState<Order[]>(INITIAL_ORDERS);
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
+  const [cartLoaded, setCartLoaded] = useState(false);
   const [currentView, setView] = useState<ViewType>('catalog');
 
   // Interactive Preference States
@@ -29,6 +30,16 @@ export default function App() {
   const [selectedAmperages, setSelectedAmperages] = useState<string[]>([]);
   const [catalogSearch, setCatalogSearch] = useState('');
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+
+  // Session ID for cart persistence (se mantiene entre recargas)
+  const [sessionId] = useState(() => {
+    let sid = localStorage.getItem('cart_session_id');
+    if (!sid) {
+      sid = crypto.randomUUID();
+      localStorage.setItem('cart_session_id', sid);
+    }
+    return sid;
+  });
 
   // Auth helper
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
@@ -70,6 +81,39 @@ export default function App() {
     loadBackendData();
     return () => { active = false; };
   }, []);
+
+  // Cargar carrito desde Supabase al iniciar
+  useEffect(() => {
+    let active = true;
+    async function loadCart() {
+      try {
+        const res = await fetch(`/api/cart?session_id=${sessionId}`);
+        const data = await res.json();
+        if (active && Array.isArray(data) && data.length > 0) {
+          setCartItems(data);
+        }
+      } catch (err) {
+        console.error('Error loading cart from server:', err);
+      } finally {
+        if (active) setCartLoaded(true);
+      }
+    }
+    loadCart();
+    return () => { active = false; };
+  }, [sessionId]);
+
+  // Sincronizar carrito con Supabase cada vez que cambie
+  useEffect(() => {
+    if (!cartLoaded) return;
+    const timer = setTimeout(() => {
+      fetch('/api/cart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, items: cartItems })
+      }).catch(err => console.error('Error syncing cart:', err));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [cartItems, sessionId, cartLoaded]);
 
   // Cart operations
   const addToCart = (product: Product) => {

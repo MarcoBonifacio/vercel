@@ -9,7 +9,9 @@ import {
   updateProduct, 
   deleteProduct, 
   getOrders, 
-  createOrder 
+  createOrder,
+  getCart,
+  saveCart
 } from './server_db';
 import { Product, Order } from './src/types';
 
@@ -132,6 +134,37 @@ async function startServer() {
       res.status(201).json(created);
     } catch (error: any) {
       res.status(500).json({ error: error.message || 'Failed to place order' });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // API: Cart (persistente en Supabase)
+  // -------------------------------------------------------------------------
+  app.get('/api/cart', async (req, res) => {
+    try {
+      const sessionId = req.query.session_id as string;
+      if (!sessionId) {
+        res.json([]);
+        return;
+      }
+      const cart = await getCart(sessionId);
+      res.json(cart);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || 'Failed to fetch cart' });
+    }
+  });
+
+  app.post('/api/cart', async (req, res) => {
+    try {
+      const { session_id, items } = req.body;
+      if (!session_id) {
+        res.status(400).json({ error: 'session_id is required' });
+        return;
+      }
+      await saveCart(session_id, items || []);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || 'Failed to save cart' });
     }
   });
 
