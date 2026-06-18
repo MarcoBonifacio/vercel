@@ -135,11 +135,76 @@ export async function deleteProduct(id: string): Promise<boolean> {
 
 export async function getOrders(): Promise<Order[]> {
   if (supabase) {
-    // Basic implementation that doesn't natively join items
     try {
-      const { data, error } = await supabase.from('orders').select('*');
-      if (error) throw error;
-      if (data) return data;
+      const { data: ordersData, error: ordersError } = await supabase
+        .from('orders')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (ordersError) throw ordersError;
+      if (!ordersData || ordersData.length === 0) return [];
+
+      const orderIds = ordersData.map(o => o.id);
+
+      const { data: itemsData } = await supabase
+        .from('order_items')
+        .select('*')
+        .in('order_id', orderIds);
+
+      const productIds = [...new Set((itemsData || []).map(i => i.product_id))];
+      const { data: productsData } = await supabase
+        .from('products')
+        .select('*')
+        .in('id', productIds);
+
+      const productMap = new Map((productsData || []).map(p => [p.id, p as unknown as Product]));
+
+      const { data: paymentsData } = await supabase
+        .from('payments')
+        .select('*')
+        .in('order_id', orderIds);
+
+      const paymentMap = new Map((paymentsData || []).map(p => [p.order_id, p]));
+
+      const itemsByOrder = new Map<string, any[]>();
+      (itemsData || []).forEach(item => {
+        const existing = itemsByOrder.get(item.order_id) || [];
+        existing.push(item);
+        itemsByOrder.set(item.order_id, existing);
+      });
+
+      return ordersData.map(orderData => {
+        const orderItems = (itemsByOrder.get(orderData.id) || []).map((item: any) => {
+          const product = productMap.get(item.product_id) || {
+            id: item.product_id,
+            title: item.product_title,
+            sku: item.product_sku,
+            brand: '',
+            model: '',
+            price: Number(item.unit_price),
+            stock: 0,
+            voltage: '12V',
+            imageUrl: ''
+          };
+          return { product, quantity: item.quantity };
+        });
+
+        const payment = paymentMap.get(orderData.id);
+
+        return {
+          id: orderData.id,
+          date: orderData.date,
+          customerName: orderData.customerName,
+          documentId: orderData.documentId,
+          receiptType: orderData.receiptType,
+          email: orderData.email,
+          phoneNumber: orderData.phoneNumber,
+          items: orderItems,
+          paymentMethod: payment?.paymentMethod || 'yape',
+          total: Number(orderData.total),
+          status: orderData.status
+        } as Order;
+      });
     } catch (err: any) {
       console.error('Supabase error in getOrders:', err.message || err);
       if (err?.code === '42P01') {
@@ -153,9 +218,62 @@ export async function getOrders(): Promise<Order[]> {
 export async function createOrder(ord: Order): Promise<Order> {
   if (supabase) {
     try {
-      const { data, error } = await supabase.from('orders').insert([ord]).select();
-      if (error) throw error;
-      if (data && data.length > 0) return data[0];
+      const subtotal = ord.total / 1.18;
+      const taxes = ord.total - subtotal;
+
+      const { error: orderError } = await supabase.from('orders').insert({
+        id: ord.id,
+        date: ord.date,
+        customerName: ord.customerName,
+        documentId: ord.documentId,
+        receiptType: ord.receiptType,
+        email: ord.email,
+        phoneNumber: ord.phoneNumber,
+        subtotal: Math.round(subtotal * 100) / 100,
+        taxes: Math.round(taxes * 100) / 100,
+        total: ord.total,
+        status: ord.status || 'Pendiente'
+      });
+
+      if (orderError) throw orderError;
+
+      if (ord.items.length > 0) {
+        const { error: itemsError } = await supabase.from('order_items').insert(
+          ord.items.map(item => ({
+            order_id: ord.id,
+            product_id: item.product.id,
+            product_title: item.product.title,
+            product_sku: item.product.sku,
+            quantity: item.quantity,
+            unit_price: item.product.price
+          }))
+        );
+        if (itemsError) throw itemsError;
+
+        for (const item of ord.items) {
+          const { data: product } = await supabase
+            .from('products')
+            .select('stock')
+            .eq('id', item.product.id)
+            .single();
+
+          if (product) {
+            await supabase
+              .from('products')
+              .update({ stock: Math.max(0, product.stock - item.quantity) })
+              .eq('id', item.product.id);
+          }
+        }
+      }
+
+      await supabase.from('payments').insert({
+        order_id: ord.id,
+        paymentMethod: ord.paymentMethod,
+        amount: ord.total,
+        status: 'Pendiente'
+      });
+
+      return ord;
     } catch (err) {
       console.error('Supabase error in createOrder', err);
     }
